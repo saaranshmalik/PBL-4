@@ -1,0 +1,1184 @@
+"""
+Transformer-Based Multimodal Fusion for Facial & Vocal Emotion Recognition
+===========================================================================
+Grounded in: "Multimodal Facial and Vocal Emotion Recognition: A Comprehensive
+Review of Methods, Challenges, and Future Directions"
+(Malik & Juneja, Manipal University Jaipur)
+
+Architecture Overview
+---------------------
+This implements the Cross-Modal Transformer Fusion strategy described in
+Section 3.2 of the paper, which achieves 90–95% accuracy on CMU-MOSEI
+and outperforms CNN-only and CNN-LSTM baselines by 10–15%.
+
+Two-branch design:
+  [Visual Branch]  ResNet / ViT backbone  →  Visual Transformer Encoder
+  [Audio Branch]   Wav2Vec2 backbone      →  Audio Transformer Encoder
+         ↓                                          ↓
+         └──────────── Cross-Modal Attention ───────┘
+                               ↓
+                    Multimodal Fusion Transformer
+                               ↓
+                    Classifier Head (7 emotions)
+
+Emotion Classes (standard categorical model per paper Section 4.3):
+  0=Neutral, 1=Happy, 2=Sad, 3=Angry, 4=Fear, 5=Surprise, 6=Disgust
+
+Datasets this model targets (per paper Tables 1 & 2):
+  - IEMOCAP    (audio-visual dyadic interactions)
+  - CMU-MOSEI  (large-scale multimodal sentiment & emotion)
+  - MELD       (multimodal multi-party emotion in conversations)
+
+Requirements:
+  pip install torch torchvision torchaudio transformers timm
+"""
+
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple, Dict
+
+# Optional external libs — import gracefully so script remains usable
+try:
+    from transformers import Wav2Vec2Model, Wav2Vec2Processor, ViTModel, ViTImageProcessor
+except Exception:
+    Wav2Vec2Model = Wav2Vec2Processor = ViTModel = ViTImageProcessor = None
+
+try:
+    import librosa
+except Exception:
+    librosa = None
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+try:
+    from datasets import load_dataset
+except Exception:
+    load_dataset = None
+
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import AdamW
+import numpy as np
+
+# Device
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Lazy backbone placeholders (will be loaded on demand)
+wav_processor = None
+wav_model = None
+vit_processor = None
+vit_model = None
+
+
+def ensure_backbones_loaded(allow_download: bool = False) -> bool:
+    """Attempt to load Wav2Vec2 + ViT backbones lazily.
+
+    - Tries to load from the local cache first (no network).
+    - If not found and allow_download=True, will attempt a network download.
+    - Returns True when both processors+models are available locally, else False.
+    """
+    global wav_processor, wav_model, vit_processor, vit_model
+    if wav_model is not None and vit_model is not None:
+        return True
+
+    if Wav2Vec2Model is None or ViTModel is None:
+        return False
+
+    # Try loading from local cache (no network)
+    try:
+        wav_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base", local_files_only=True)
+        wav_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base", local_files_only=True).to(DEVICE)
+        wav_model.eval()
+        for p in wav_model.parameters():
+            p.requires_grad = False
+
+        vit_processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224", local_files_only=True)
+        vit_model = ViTModel.from_pretrained("google/vit-base-patch16-224", local_files_only=True).to(DEVICE)
+        vit_model.eval()
+        for p in vit_model.parameters():
+            p.requires_grad = False
+
+        return True
+    except Exception:
+        # Not cached locally — only attempt network if explicitly allowed
+        if not allow_download:
+            return False
+
+    # Optional network download
+    try:
+        print("[Downloading Wav2Vec2 & ViT backbones (allow_download=True)]")
+        wav_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
+        wav_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base").to(DEVICE)
+        wav_model.eval()
+        for p in wav_model.parameters():
+            p.requires_grad = False
+
+        vit_processor = ViTImageProcessor.from_pretrained("google/vit-base-patch16-224")
+        vit_model = ViTModel.from_pretrained("google/vit-base-patch16-224").to(DEVICE)
+        vit_model.eval()
+        for p in vit_model.parameters():
+            p.requires_grad = False
+
+        return True
+    except Exception as exc:
+        print(f"[Warning] could not download/load backbones: {exc}")
+        wav_processor = None
+        wav_model = None
+        vit_processor = None
+        vit_model = None
+        return False
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FusionConfig:
+    """Central configuration — all hyperparameters in one place."""
+
+    # ── Emotion classes ────────────────────────────────────────────────────
+    NUM_CLASSES: int = 7
+    EMOTION_LABELS: list = [
+        "Neutral", "Happy", "Sad", "Angry", "Fear", "Surprise", "Disgust"
+    ]
+
+    # ── Visual branch ──────────────────────────────────────────────────────
+    # Per Section 3.2: ViT / ResNet backbone → transformer encoder
+    VISUAL_BACKBONE: str = "vit_base"     # "vit_base" | "resnet50"
+    VISUAL_INPUT_DIM: int = 768           # ViT-Base token dim (or ResNet-50 → 2048 → projected)
+    VISUAL_PROJ_DIM: int = 512            # Projection to shared transformer space
+    VISUAL_SEQ_LEN: int = 197            # ViT 16×16 patches + CLS token (224px input)
+    VISUAL_DROPOUT: float = 0.1
+
+    # ── Audio branch ───────────────────────────────────────────────────────
+    # Per Section 3.1.2 & 3.2: Wav2Vec2 self-supervised encoder
+    AUDIO_BACKBONE: str = "wav2vec2"      # "wav2vec2" | "hubert" | "cnn_lstm"
+    AUDIO_INPUT_DIM: int = 768           # Wav2Vec2-Base hidden size
+    AUDIO_PROJ_DIM: int = 512
+    AUDIO_SEQ_LEN: int = 128            # ~2s audio @ 16kHz downsampled
+    AUDIO_DROPOUT: float = 0.1
+
+    # ── Shared transformer space ───────────────────────────────────────────
+    D_MODEL: int = 512
+    N_HEADS: int = 8
+    N_ENCODER_LAYERS: int = 4           # Per-modality transformer depth
+    N_FUSION_LAYERS: int = 2            # Cross-modal fusion transformer depth
+    FFN_DIM: int = 2048
+    DROPOUT: float = 0.1
+    MAX_SEQ_LEN: int = 512
+
+    # ── Classifier head ────────────────────────────────────────────────────
+    CLASSIFIER_HIDDEN: int = 256
+    CLASSIFIER_DROPOUT: float = 0.3
+
+    # ── Training ───────────────────────────────────────────────────────────
+    LEARNING_RATE: float = 1e-4
+    WEIGHT_DECAY: float = 1e-2
+    LABEL_SMOOTHING: float = 0.1        # Per Section 4.3: label smoothing for annotation noise
+    BATCH_SIZE: int = 32
+    MAX_EPOCHS: int = 50
+    WARMUP_STEPS: int = 1000
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. POSITIONAL ENCODING
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PositionalEncoding(nn.Module):
+    """
+    Standard sinusoidal positional encoding.
+    Used for both visual patch sequences and audio frame sequences.
+    """
+
+    def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)                    # (1, max_len, d_model)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (batch, seq_len, d_model)"""
+        x = x + self.pe[:, : x.size(1)]
+        return self.dropout(x)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. VISUAL BRANCH
+#    Paper ref: Section 3.1.1 (CNN-based FER) + Section 3.2 (ViT-based FER)
+#    "Vision Transformers (ViT) and hybrid CNN–Transformer architectures have
+#     demonstrated improved robustness to pose variation and partial occlusion
+#     by leveraging self-attention mechanisms to model spatial dependencies
+#     across facial regions."
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VisualFeatureProjector(nn.Module):
+    """
+    Projects raw backbone features (ViT/ResNet) into the shared d_model space.
+
+    In practice: replace the forward() input with actual backbone embeddings
+    from timm (e.g., timm.create_model('vit_base_patch16_224', pretrained=True)).
+    This module handles the projection + normalization step.
+    """
+
+    def __init__(self, input_dim: int, d_model: int, dropout: float = 0.1):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (batch, seq_len, input_dim) → (batch, seq_len, d_model)"""
+        return self.proj(x)
+
+
+class VisualTransformerEncoder(nn.Module):
+    """
+    Per-modality transformer encoder for facial features.
+
+    Architecture per paper Section 3.2:
+    - Self-attention across patch tokens models global spatial relationships
+    - Deeper than CNN receptive fields; captures subtle micro-expressions
+    - Attention to emotionally salient regions (eyes, eyebrows, mouth)
+    """
+
+    def __init__(self, cfg: FusionConfig):
+        super().__init__()
+        self.projector = VisualFeatureProjector(
+            cfg.VISUAL_INPUT_DIM, cfg.D_MODEL, cfg.VISUAL_DROPOUT
+        )
+        self.pos_encoding = PositionalEncoding(
+            cfg.D_MODEL, cfg.MAX_SEQ_LEN, cfg.DROPOUT
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=cfg.D_MODEL,
+            nhead=cfg.N_HEADS,
+            dim_feedforward=cfg.FFN_DIM,
+            dropout=cfg.DROPOUT,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,                    # Pre-LN for training stability
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=cfg.N_ENCODER_LAYERS,
+            norm=nn.LayerNorm(cfg.D_MODEL)
+        )
+
+        # CLS token for sequence-level visual representation
+        self.cls_token = nn.Parameter(torch.randn(1, 1, cfg.D_MODEL) * 0.02)
+
+    def forward(
+        self,
+        visual_features: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            visual_features: (batch, seq_len, visual_input_dim)
+                             Raw ViT patch embeddings or ResNet spatial features
+            src_key_padding_mask: (batch, seq_len) bool mask for padding
+
+        Returns:
+            cls_repr:     (batch, d_model)   — CLS token representation
+            token_reprs:  (batch, seq_len+1, d_model) — full sequence for cross-attn
+        """
+        batch_size = visual_features.size(0)
+
+        # Project to d_model
+        x = self.projector(visual_features)
+
+        # Prepend CLS token
+        cls = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls, x], dim=1)          # (batch, seq_len+1, d_model)
+
+        # Add positional encoding
+        x = self.pos_encoding(x)
+
+        # Extend mask for CLS token
+        if src_key_padding_mask is not None:
+            cls_mask = torch.zeros(
+                batch_size, 1, dtype=torch.bool, device=x.device
+            )
+            src_key_padding_mask = torch.cat([cls_mask, src_key_padding_mask], dim=1)
+
+        # Transformer encoding
+        x = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
+
+        return x[:, 0, :], x                    # CLS repr, full sequence
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. AUDIO BRANCH
+#    Paper ref: Section 3.1.2 (SER) + Section 3.2 (Wav2Vec2)
+#    "Self-supervised models such as Wav2Vec2 and HuBERT learn contextualized
+#     speech embeddings from large-scale unlabeled audio corpora, significantly
+#     enhancing generalization across speakers and recording environments."
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AudioFeatureProjector(nn.Module):
+    """
+    Projects Wav2Vec2/HuBERT hidden states to shared d_model space.
+    """
+
+    def __init__(self, input_dim: int, d_model: int, dropout: float = 0.1):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+
+class AudioTransformerEncoder(nn.Module):
+    """
+    Per-modality transformer encoder for speech features.
+
+    Per paper Section 3.1.2 & 3.2:
+    - Processes Wav2Vec2 hidden states (contextual embeddings)
+    - Captures pitch, energy, and rhythm temporal patterns
+    - "CNN–LSTM hybrid architectures combine spatial feature extraction
+       with temporal modeling" — here replaced by transformer for superior
+       long-range dependency modeling
+    """
+
+    def __init__(self, cfg: FusionConfig):
+        super().__init__()
+        self.projector = AudioFeatureProjector(
+            cfg.AUDIO_INPUT_DIM, cfg.D_MODEL, cfg.AUDIO_DROPOUT
+        )
+        self.pos_encoding = PositionalEncoding(
+            cfg.D_MODEL, cfg.MAX_SEQ_LEN, cfg.DROPOUT
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=cfg.D_MODEL,
+            nhead=cfg.N_HEADS,
+            dim_feedforward=cfg.FFN_DIM,
+            dropout=cfg.DROPOUT,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=cfg.N_ENCODER_LAYERS,
+            norm=nn.LayerNorm(cfg.D_MODEL)
+        )
+        self.cls_token = nn.Parameter(torch.randn(1, 1, cfg.D_MODEL) * 0.02)
+
+    def forward(
+        self,
+        audio_features: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            audio_features: (batch, seq_len, audio_input_dim)
+                            Wav2Vec2 hidden states or MFCC spectrogram features
+            src_key_padding_mask: (batch, seq_len) bool mask
+
+        Returns:
+            cls_repr:    (batch, d_model)
+            token_reprs: (batch, seq_len+1, d_model)
+        """
+        batch_size = audio_features.size(0)
+
+        x = self.projector(audio_features)
+
+        cls = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls, x], dim=1)
+
+        x = self.pos_encoding(x)
+
+        if src_key_padding_mask is not None:
+            cls_mask = torch.zeros(
+                batch_size, 1, dtype=torch.bool, device=x.device
+            )
+            src_key_padding_mask = torch.cat([cls_mask, src_key_padding_mask], dim=1)
+
+        x = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
+
+        return x[:, 0, :], x
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. CROSS-MODAL ATTENTION
+#    Paper ref: Section 3.2
+#    "Cross-modal transformers that jointly model audio–visual interactions,
+#     enabling dynamic weighting of modalities based on signal quality."
+#    "Attention-based fusion mechanisms further enhance robustness by selectively
+#     emphasizing reliable modalities under adverse conditions."
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CrossModalAttention(nn.Module):
+    """
+    Bidirectional cross-modal attention between visual and audio streams.
+
+    For each modality:
+      - Query = current modality tokens
+      - Key/Value = other modality tokens
+    This allows each modality to "attend" to the other, learning which
+    visual moments correspond to which audio segments.
+
+    Adaptive behavior (per paper Section 3.2):
+    "When facial input is degraded due to occlusion or poor lighting,
+     the model increases reliance on speech cues, and vice versa."
+    → Implemented via gating with modality quality signals.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+
+        # Visual attends to Audio
+        self.v2a_attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
+        # Audio attends to Visual
+        self.a2v_attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
+
+        # Post-attention layer norms
+        self.norm_v = nn.LayerNorm(d_model)
+        self.norm_a = nn.LayerNorm(d_model)
+
+        # FFN for each modality after cross-attention
+        self.ffn_v = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+            nn.Dropout(dropout),
+        )
+        self.ffn_a = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm_v2 = nn.LayerNorm(d_model)
+        self.norm_a2 = nn.LayerNorm(d_model)
+
+        # ── Adaptive modality gating ────────────────────────────────────────
+        # Scalar gate per sample; high visual quality → more visual weight
+        # "adaptive behavior closely mirrors human emotion perception" (paper §3.2)
+        self.visual_gate = nn.Linear(d_model, 1)
+        self.audio_gate  = nn.Linear(d_model, 1)
+
+    def forward(
+        self,
+        visual_tokens: torch.Tensor,            # (batch, vseq, d_model)
+        audio_tokens: torch.Tensor,             # (batch, aseq, d_model)
+        visual_cls: torch.Tensor,               # (batch, d_model) for gating
+        audio_cls: torch.Tensor,                # (batch, d_model) for gating
+        visual_mask: Optional[torch.Tensor] = None,
+        audio_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            visual_out:  (batch, vseq, d_model)  — visually-enriched features
+            audio_out:   (batch, aseq, d_model)  — audibly-enriched features
+            v_gate:      (batch, 1)               — visual reliability gate
+            a_gate:      (batch, 1)               — audio reliability gate
+        """
+        # Adaptive gates (sigmoid → 0–1 reliability weight)
+        v_gate = torch.sigmoid(self.visual_gate(visual_cls))    # (batch, 1)
+        a_gate = torch.sigmoid(self.audio_gate(audio_cls))      # (batch, 1)
+
+        # Pre-LN + cross attention: visual queries → audio key/values
+        v_norm = self.norm_v(visual_tokens)
+        v_cross, _ = self.v2a_attn(
+            query=v_norm,
+            key=audio_tokens,
+            value=audio_tokens,
+            key_padding_mask=audio_mask,
+        )
+        # Gated residual: if audio is unreliable, reduce its contribution
+        v_cross = visual_tokens + a_gate.unsqueeze(1) * v_cross
+
+        # FFN
+        v_out = v_cross + self.ffn_v(self.norm_v2(v_cross))
+
+        # Pre-LN + cross attention: audio queries → visual key/values
+        a_norm = self.norm_a(audio_tokens)
+        a_cross, _ = self.a2v_attn(
+            query=a_norm,
+            key=visual_tokens,
+            value=visual_tokens,
+            key_padding_mask=visual_mask,
+        )
+        a_cross = audio_tokens + v_gate.unsqueeze(1) * a_cross
+
+        a_out = a_cross + self.ffn_a(self.norm_a2(a_cross))
+
+        return v_out, a_out, v_gate, a_gate
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. MULTIMODAL FUSION TRANSFORMER
+#    Paper ref: Section 3.2 Table 2 — "Cross-Modal Transformers: 90–95% on CMU-MOSEI"
+#    Stacks N_FUSION_LAYERS of cross-modal attention, then pools to fixed-dim repr
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MultimodalFusionTransformer(nn.Module):
+    """
+    Stacks multiple CrossModalAttention layers, then fuses both modalities
+    into a single joint representation for classification.
+
+    Fusion strategy per paper Section 3.1.3:
+    "Feature-level fusion allows networks to directly learn correlations
+     between facial expressions and vocal characteristics, often resulting
+     in higher accuracy compared to decision-level fusion strategies."
+    """
+
+    def __init__(self, cfg: FusionConfig):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            CrossModalAttention(cfg.D_MODEL, cfg.N_HEADS, cfg.DROPOUT)
+            for _ in range(cfg.N_FUSION_LAYERS)
+        ])
+
+        # Joint self-attention over concatenated [visual_cls, audio_cls]
+        joint_layer = nn.TransformerEncoderLayer(
+            d_model=cfg.D_MODEL * 2,
+            nhead=cfg.N_HEADS,
+            dim_feedforward=cfg.FFN_DIM,
+            dropout=cfg.DROPOUT,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.joint_encoder = nn.TransformerEncoder(
+            joint_layer, num_layers=2,
+            norm=nn.LayerNorm(cfg.D_MODEL * 2)
+        )
+
+        self.norm_v = nn.LayerNorm(cfg.D_MODEL)
+        self.norm_a = nn.LayerNorm(cfg.D_MODEL)
+
+    def forward(
+        self,
+        visual_tokens: torch.Tensor,            # (batch, vseq, d_model)
+        audio_tokens: torch.Tensor,             # (batch, aseq, d_model)
+        visual_cls: torch.Tensor,               # (batch, d_model)
+        audio_cls: torch.Tensor,                # (batch, d_model)
+        visual_mask: Optional[torch.Tensor] = None,
+        audio_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Returns:
+            fused_repr:  (batch, d_model*2)  — joint embedding for classification
+            info:        dict with gate values for interpretability
+        """
+        v_tokens = visual_tokens
+        a_tokens = audio_tokens
+        v_cls, a_cls = visual_cls, audio_cls
+
+        v_gates, a_gates = [], []
+
+        for layer in self.layers:
+            v_tokens, a_tokens, vg, ag = layer(
+                v_tokens, a_tokens, v_cls, a_cls, visual_mask, audio_mask
+            )
+            # Update CLS from enriched tokens (mean of sequence)
+            v_cls = v_tokens.mean(dim=1)
+            a_cls = a_tokens.mean(dim=1)
+            v_gates.append(vg)
+            a_gates.append(ag)
+
+        # Final per-modality representations
+        v_repr = self.norm_v(v_cls)             # (batch, d_model)
+        a_repr = self.norm_a(a_cls)             # (batch, d_model)
+
+        # Concatenate and run joint encoder (one "token" per modality)
+        joint = torch.stack([v_repr, a_repr], dim=1)    # (batch, 2, d_model)
+        # Reshape for joint encoder: (batch, 2, d_model*2) won't work — instead:
+        joint_flat = torch.cat([v_repr, a_repr], dim=-1).unsqueeze(1)  # (batch,1,d_model*2)
+        joint_out = self.joint_encoder(joint_flat)
+        fused_repr = joint_out.squeeze(1)               # (batch, d_model*2)
+
+        info = {
+            "visual_gates": torch.stack(v_gates, dim=1).mean(dim=1),   # (batch,1)
+            "audio_gates":  torch.stack(a_gates, dim=1).mean(dim=1),
+        }
+        return fused_repr, info
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. CLASSIFIER HEAD
+#    Paper ref: Section 4.3 — categorical emotion model with label smoothing
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EmotionClassifier(nn.Module):
+    """
+    MLP classifier on top of fused multimodal representation.
+
+    Per paper Section 4.3:
+    "Label smoothing and uncertainty-aware training are employed to
+     mitigate annotation noise" → applied in the training loss.
+    """
+
+    def __init__(self, cfg: FusionConfig):
+        super().__init__()
+        input_dim = cfg.D_MODEL * 2             # From fusion output
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, cfg.CLASSIFIER_HIDDEN),
+            nn.GELU(),
+            nn.Dropout(cfg.CLASSIFIER_DROPOUT),
+            nn.Linear(cfg.CLASSIFIER_HIDDEN, cfg.CLASSIFIER_HIDDEN // 2),
+            nn.GELU(),
+            nn.Dropout(cfg.CLASSIFIER_DROPOUT / 2),
+            nn.Linear(cfg.CLASSIFIER_HIDDEN // 2, cfg.NUM_CLASSES),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (batch, d_model*2) → logits: (batch, num_classes)"""
+        return self.head(x)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. FULL MODEL: TransformerFusionEmotionModel
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TransformerFusionEmotionModel(nn.Module):
+    """
+    Complete Transformer-Based Multimodal Emotion Recognition System.
+
+    Implements the Cross-Modal Transformer architecture from Section 3.2
+    of the paper, targeting 90–95% accuracy on CMU-MOSEI / MELD / IEMOCAP.
+
+    Usage example:
+        cfg   = FusionConfig()
+        model = TransformerFusionEmotionModel(cfg)
+
+        # Inputs: either precomputed embeddings (visual: B x 197 x 768,
+        # audio: B x T x 768) or raw processor outputs (pixel_values, input_values).
+        # Use `predict_from_files()` or `MultimodalEmotionDataset` for real data.
+
+        output = model(visual_feats, audio_feats)
+        logits = output["logits"]                 # (B, 7) emotion logits
+        probs  = output["probs"]                  # (B, 7) after softmax
+        pred   = output["prediction"]             # (B,)   class indices
+    """
+
+    def __init__(self, cfg: FusionConfig = FusionConfig(), vit_backbone: Optional[ViTModel] = None, wav_backbone: Optional[Wav2Vec2Model] = None, freeze_backbones: bool = True):
+        """Attach fusion modules and optional pretrained backbones (ViT / Wav2Vec2).
+
+        If `vit_backbone` / `wav_backbone` are not provided the module will use
+        the lazily-loaded global backbones (if available). When `freeze_backbones`
+        is True (default) backbone parameters are left non-trainable.
+        """
+        super().__init__()
+        self.cfg = cfg
+
+        # Backbones / processors (may be None if not available)
+        self.vit_model = vit_backbone if vit_backbone is not None else vit_model
+        self.wav_model = wav_backbone if wav_backbone is not None else wav_model
+        self.vit_processor = vit_processor
+        self.wav_processor = wav_processor
+
+        if freeze_backbones:
+            if self.vit_model is not None:
+                for p in self.vit_model.parameters():
+                    p.requires_grad = False
+            if self.wav_model is not None:
+                for p in self.wav_model.parameters():
+                    p.requires_grad = False
+
+        # ── Per-modality encoders ──────────────────────────────────────────
+        self.visual_encoder = VisualTransformerEncoder(cfg)
+        self.audio_encoder  = AudioTransformerEncoder(cfg)
+
+        # ── Cross-modal fusion ─────────────────────────────────────────────
+        self.fusion = MultimodalFusionTransformer(cfg)
+
+        # ── Classifier ────────────────────────────────────────────────────
+        self.classifier = EmotionClassifier(cfg)
+
+        # ── Weight initialization ──────────────────────────────────────────
+        self._init_weights()
+
+    def set_backbones_trainable(self, trainable: bool):
+        """Enable/disable gradient updates for attached ViT/Wav2Vec2 backbones."""
+        if hasattr(self, "vit_model") and self.vit_model is not None:
+            for p in self.vit_model.parameters():
+                p.requires_grad = trainable
+        if hasattr(self, "wav_model") and self.wav_model is not None:
+            for p in self.wav_model.parameters():
+                p.requires_grad = trainable
+
+    def _init_weights(self):
+        """Xavier initialization for linear layers; small normal for embeddings."""
+        for name, param in self.named_parameters():
+            if "weight" in name and param.dim() >= 2:
+                nn.init.xavier_uniform_(param)
+            elif "bias" in name:
+                nn.init.zeros_(param)
+            elif "cls_token" in name:
+                nn.init.trunc_normal_(param, std=0.02)
+
+    def forward(
+        self,
+        visual_features: torch.Tensor,
+        audio_features: torch.Tensor,
+        visual_mask: Optional[torch.Tensor] = None,
+        audio_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward accepts either:
+          - precomputed embeddings: visual (B, 197, 768), audio (B, T, 768), or
+          - raw processor outputs: `pixel_values` (B, 3, 224, 224) and
+            `input_values` (B, T) which will be passed through attached
+            ViT / Wav2Vec2 backbones (if available).
+        """
+        device = next(self.parameters()).device
+
+        # If raw pixel images are provided, run ViT backbone (if available)
+        if visual_features is not None and visual_features.dim() == 4 and visual_features.size(1) == 3:
+            if self.vit_model is None:
+                raise RuntimeError("ViT backbone not loaded. Call ensure_backbones_loaded() or provide precomputed visual embeddings.")
+            vit_out = self.vit_model(pixel_values=visual_features.to(device))
+            visual_features = vit_out.last_hidden_state
+
+        # If raw audio input_values are provided, run Wav2Vec2 backbone (if available)
+        if audio_features is not None and audio_features.dim() == 2:
+            if self.wav_model is None:
+                raise RuntimeError("Wav2Vec2 backbone not loaded. Call ensure_backbones_loaded() or provide precomputed audio embeddings.")
+            wav_out = self.wav_model(input_values=audio_features.to(device))
+            audio_features = wav_out.last_hidden_state
+
+        # Ensure tensors are on the correct device and dtype
+        visual_features = visual_features.to(device)
+        audio_features = audio_features.to(device)
+
+        # ── Step 1: Per-modality encoding ─────────────────────────────────
+        visual_cls, visual_tokens = self.visual_encoder(visual_features, visual_mask)
+        audio_cls,  audio_tokens  = self.audio_encoder(audio_features, audio_mask)
+
+        # ── Step 2: Cross-modal fusion ────────────────────────────────────
+        fused, gate_info = self.fusion(
+            visual_tokens, audio_tokens,
+            visual_cls, audio_cls,
+            visual_mask, audio_mask,
+        )
+
+        # ── Step 3: Classification ─────────────────────────────────────────
+        logits = self.classifier(fused)
+
+        return {
+            "logits":       logits,
+            "probs":        F.softmax(logits, dim=-1),
+            "prediction":   logits.argmax(dim=-1),
+            "visual_gate":  gate_info["visual_gates"],
+            "audio_gate":   gate_info["audio_gates"],
+        }
+
+    def predict_emotion(
+        self,
+        visual_features: torch.Tensor,
+        audio_features: torch.Tensor,
+    ) -> Dict[str, object]:
+        """
+        Convenience inference method returning human-readable labels.
+
+        Returns dict with 'label', 'confidence', 'all_probs', 'dominant_modality'
+        """
+        self.eval()
+        with torch.no_grad():
+            out = self.forward(visual_features, audio_features)
+
+        probs = out["probs"][0]                     # (num_classes,)
+        pred_idx = out["prediction"][0].item()
+        label = FusionConfig.EMOTION_LABELS[pred_idx]
+        confidence = probs[pred_idx].item()
+
+        v_gate = out["visual_gate"][0].item()
+        a_gate = out["audio_gate"][0].item()
+        dominant = "visual" if v_gate > a_gate else "audio"
+
+        return {
+            "label":            label,
+            "confidence":       confidence,
+            "all_probs":        {
+                FusionConfig.EMOTION_LABELS[i]: probs[i].item()
+                for i in range(len(FusionConfig.EMOTION_LABELS))
+            },
+            "visual_gate":       v_gate,
+            "audio_gate":        a_gate,
+            "dominant_modality": dominant,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. LOSS FUNCTION
+#    Paper ref: Section 4.3
+#    "Label smoothing and uncertainty-aware training are employed to mitigate
+#     annotation noise" in emotion datasets like IEMOCAP and CMU-MOSEI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EmotionRecognitionLoss(nn.Module):
+    """
+    Cross-entropy with label smoothing for annotation noise robustness.
+    Optionally weighted for class imbalance (neutral class dominance in IEMOCAP).
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 7,
+        label_smoothing: float = 0.1,
+        class_weights: Optional[torch.Tensor] = None,
+    ):
+        super().__init__()
+        self.ce = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=label_smoothing,
+        )
+
+    def forward(
+        self,
+        logits: torch.Tensor,               # (batch, num_classes)
+        targets: torch.Tensor,              # (batch,) int class indices
+    ) -> torch.Tensor:
+        return self.ce(logits, targets)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. LEARNING RATE SCHEDULER (Warmup + Cosine)
+#     Paper ref: Section 3.2 — transformer training requires warmup
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WarmupCosineScheduler(torch.optim.lr_scheduler.LambdaLR):
+    """
+    Linear warmup followed by cosine annealing.
+    Standard for transformer fine-tuning (per BERT/Wav2Vec2 training recipes).
+    """
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        warmup_steps: int,
+        total_steps: int,
+    ):
+        def lr_lambda(current_step: int) -> float:
+            if current_step < warmup_steps:
+                return float(current_step) / float(max(1, warmup_steps))
+            progress = float(current_step - warmup_steps) / float(
+                max(1, total_steps - warmup_steps)
+            )
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        super().__init__(optimizer, lr_lambda)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. TRAINING STEP SKELETON
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EmotionTrainer:
+    """
+    Training loop skeleton for TransformerFusionEmotionModel.
+
+    Datasets (per paper):
+      - IEMOCAP:   9.5hr dyadic sessions, 10,039 utterances, 4/6 emotion classes
+      - CMU-MOSEI: 23,454 movie clips, 7 emotion labels
+      - MELD:      13,708 utterances from Friends TV, 7 emotions
+
+    Integration with Hugging Face:
+        from transformers import Wav2Vec2Model, ViTModel
+        wav2vec = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
+        vit     = ViTModel.from_pretrained("google/vit-base-patch16-224")
+    """
+
+    def __init__(self, model: TransformerFusionEmotionModel, cfg: FusionConfig):
+        self.model = model
+        self.cfg = cfg
+
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=cfg.LEARNING_RATE,
+            weight_decay=cfg.WEIGHT_DECAY,
+            betas=(0.9, 0.98),
+        )
+        self.criterion = EmotionRecognitionLoss(
+            num_classes=cfg.NUM_CLASSES,
+            label_smoothing=cfg.LABEL_SMOOTHING,
+        )
+
+    def train_step(
+        self,
+        visual_features: torch.Tensor,
+        audio_features: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Single training step. Returns dict with loss and accuracy."""
+        self.model.train()
+        self.optimizer.zero_grad()
+
+        output = self.model(visual_features, audio_features)
+        loss = self.criterion(output["logits"], labels)
+
+        loss.backward()
+        # Gradient clipping — important for transformer stability
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+
+        acc = (output["prediction"] == labels).float().mean().item()
+        return {"loss": loss.item(), "accuracy": acc}
+
+    def eval_step(
+        self,
+        visual_features: torch.Tensor,
+        audio_features: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Single evaluation step."""
+        self.model.eval()
+        with torch.no_grad():
+            output = self.model(visual_features, audio_features)
+            loss = self.criterion(output["logits"], labels)
+            acc = (output["prediction"] == labels).float().mean().item()
+        return {"loss": loss.item(), "accuracy": acc}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. DATA LOADER, TRAINING & REAL-WORLD DEMO
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Label mapping for MELD → model indices
+EMOTION_TO_LABEL = {
+    "neutral": 0,
+    "happy": 1, "joy": 1,
+    "sadness": 2, "sad": 2,
+    "anger": 3, "angry": 3,
+    "fear": 4,
+    "surprise": 5,
+    "disgust": 6,
+}
+
+
+class MultimodalEmotionDataset(Dataset):
+    """HuggingFace MELD -> returns `visual_feats`, `audio_feats`, `label`.
+
+    Each item attempts to convert frame -> ViT embeddings and
+    waveform -> Wav2Vec2 embeddings (requires backbones to be available).
+    If backbones are not loaded, the dataset raises an informative error.
+    """
+
+    def __init__(self, split: str = "train", max_samples: Optional[int] = None):
+        if load_dataset is None:
+            raise ImportError("datasets package is required: pip install datasets")
+        self.ds = load_dataset("declare-lab/MELD", split=split)
+        if max_samples is not None:
+            self.ds = self.ds.select(range(min(max_samples, len(self.ds))))
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx: int):
+        ex = self.ds[int(idx)]
+
+        # --- Audio waveform ---
+        waveform = None
+        aud = ex.get("audio") or ex.get("wav")
+        if isinstance(aud, dict) and aud.get("path") and librosa is not None:
+            waveform, _ = librosa.load(aud["path"], sr=16000)
+        elif isinstance(aud, dict) and aud.get("array") is not None:
+            waveform = np.array(aud["array"])
+        if waveform is None:
+            waveform = np.zeros(int(16000 * 1.0), dtype=np.float32)
+
+        # --- Representative frame (try video field) ---
+        frame = None
+        vid = ex.get("video")
+        if isinstance(vid, dict) and vid.get("path") and cv2 is not None:
+            cap = cv2.VideoCapture(vid["path"])
+            if cap.isOpened():
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))
+                ret, img = cap.read()
+                cap.release()
+                if ret:
+                    frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if frame is None:
+            frame = np.zeros((224, 224, 3), dtype=np.uint8)
+
+        # --- Label ---
+        raw_label = ex.get("Emotion") or ex.get("emotion") or "neutral"
+        label = EMOTION_TO_LABEL.get(str(raw_label).lower(), 0)
+
+        # --- Convert to embeddings (requires backbones) ---
+        # Do NOT attempt network downloads here — require cached backbones.
+        if not ensure_backbones_loaded(allow_download=False):
+            raise RuntimeError("Pretrained ViT/Wav2Vec2 backbones are required to build embeddings and are not cached locally.")
+        if vit_model is None or wav_model is None or vit_processor is None or wav_processor is None:
+            raise RuntimeError("Pretrained ViT/Wav2Vec2 backbones are required to build embeddings. Call ensure_backbones_loaded(allow_download=True) to attempt download.")
+
+        # ViT embeddings (197, 768)
+        px = vit_processor(images=frame, return_tensors="pt").pixel_values.to(DEVICE)
+        with torch.no_grad():
+            vit_out = vit_model(pixel_values=px)
+        visual_feats = vit_out.last_hidden_state.squeeze(0).cpu()
+
+        # Wav2Vec2 embeddings (T, 768)
+        wav_in = wav_processor(waveform, sampling_rate=16000, return_tensors="pt", padding=True).input_values.to(DEVICE)
+        with torch.no_grad():
+            wav_out = wav_model(input_values=wav_in)
+        audio_feats = wav_out.last_hidden_state.squeeze(0).cpu()
+
+        return visual_feats, audio_feats, int(label)
+
+
+def train_model(model: TransformerFusionEmotionModel, epochs: int = 20, batch_size: int = 8, max_samples: Optional[int] = 500):
+    """Train using EmotionTrainer; freeze backbones for first 5 epochs."""
+    device = next(model.parameters()).device
+    ds = MultimodalEmotionDataset(split="train", max_samples=max_samples)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+    trainer = EmotionTrainer(model, model.cfg)
+
+    for epoch in range(epochs):
+        # Freeze for first 5 epochs
+        model.set_backbones_trainable(epoch >= 5)
+
+        model.train()
+        agg_loss = 0.0
+        agg_acc = 0.0
+        for i, (v_feats, a_feats, labels) in enumerate(loader):
+            v_feats = v_feats.to(device)
+            a_feats = a_feats.to(device)
+            labels = labels.to(device)
+
+            metrics = trainer.train_step(v_feats, a_feats, labels)
+            agg_loss += metrics["loss"]
+            agg_acc += metrics["accuracy"]
+
+            if (i + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{epochs} batch {i+1}/{len(loader)} loss={agg_loss/(i+1):.4f} acc={agg_acc/(i+1):.4f}")
+
+        print(f"Epoch {epoch+1} finished — loss={agg_loss/max(1,len(loader)):.4f} acc={agg_acc/max(1,len(loader)):.4f}")
+
+
+def predict_from_files(image_path: str, audio_path: str, model: TransformerFusionEmotionModel):
+    """Read image/audio files, extract backbone embeddings, and predict."""
+    if cv2 is None:
+        raise ImportError("opencv-python is required for predict_from_files")
+    if librosa is None:
+        raise ImportError("librosa is required for predict_from_files")
+
+    # Ensure backbones are available locally (do not auto-download)
+    if not ensure_backbones_loaded(allow_download=False):
+        raise RuntimeError("Pretrained backbones are required for predict_from_files but are not cached locally. Call ensure_backbones_loaded(allow_download=True) to download them.")
+
+    img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (224, 224))
+
+    audio, _ = librosa.load(audio_path, sr=16000)
+
+    # Extract embeddings
+    px = vit_processor(images=img, return_tensors="pt").pixel_values.to(DEVICE)
+    with torch.no_grad():
+        v_out = vit_model(pixel_values=px)
+    visual_feats = v_out.last_hidden_state
+
+    wav_in = wav_processor(audio, sampling_rate=16000, return_tensors="pt", padding=True).input_values.to(DEVICE)
+    with torch.no_grad():
+        a_out = wav_model(input_values=wav_in)
+    audio_feats = a_out.last_hidden_state
+
+    model.eval()
+    with torch.no_grad():
+        out = model(visual_feats, audio_feats)
+
+    probs = out["probs"][0].cpu()
+    pred_idx = int(out["prediction"][0].cpu())
+    label = FusionConfig.EMOTION_LABELS[pred_idx]
+    confidence = probs[pred_idx].item()
+    v_gate = out["visual_gate"][0].cpu().item()
+    a_gate = out["audio_gate"][0].cpu().item()
+    dominant = "visual" if v_gate > a_gate else "audio"
+
+    return {
+        "label": label,
+        "confidence": confidence,
+        "dominant_modality": dominant,
+        "all_probs": {FusionConfig.EMOTION_LABELS[i]: probs[i].item() for i in range(len(probs))},
+    }
+
+
+def demo():
+    """Demo that uses MELD (if available) or synthetic processor inputs as fallback."""
+    print("=" * 65)
+    print("  Transformer-Based Multimodal Fusion — demo")
+    print("=" * 65)
+
+    cfg = FusionConfig()
+    model = TransformerFusionEmotionModel(cfg)
+    model.to(DEVICE)
+
+    # Try MELD -> if not available, run a small processor-based smoke test
+    try:
+        ds = MultimodalEmotionDataset(split="validation", max_samples=8)
+        loader = DataLoader(ds, batch_size=4)
+        model.eval()
+        with torch.no_grad():
+            for v_feats, a_feats, labels in loader:
+                v_feats = v_feats.to(DEVICE)
+                a_feats = a_feats.to(DEVICE)
+                out = model(v_feats, a_feats)
+                probs = out["probs"].cpu()
+                preds = out["prediction"].cpu()
+                for i in range(probs.size(0)):
+                    idx = int(preds[i].item())
+                    label = FusionConfig.EMOTION_LABELS[idx]
+                    conf = probs[i, idx].item()
+                    dominant = "visual" if out["visual_gate"][i].item() > out["audio_gate"][i].item() else "audio"
+                    print(f"Sample {i}: {label}  (conf={conf:.3f})  dominant={dominant}")
+                break
+    except Exception as exc:
+        print(f"MELD/backbones unavailable or failed: {exc}\nRunning processor-free smoke test (no downloads).")
+        # Use deterministic zero embeddings (no processors/backbones required).
+        device = DEVICE
+        visual_feats = torch.zeros(1, cfg.VISUAL_SEQ_LEN, cfg.VISUAL_INPUT_DIM, dtype=torch.float32).to(device)
+        audio_feats = torch.zeros(1, cfg.AUDIO_SEQ_LEN, cfg.AUDIO_INPUT_DIM, dtype=torch.float32).to(device)
+
+        model.eval()
+        with torch.no_grad():
+            out = model(visual_feats, audio_feats)
+
+        probs = out["probs"][0].cpu()
+        pred_idx = int(out["prediction"][0].cpu())
+        print(f"Fallback demo prediction (zero-embeddings): {FusionConfig.EMOTION_LABELS[pred_idx]} (conf={probs[pred_idx]:.3f})")
+
+    print("\nDemo finished.")
+    print("=" * 65)
+
+
+if __name__ == "__main__":
+    demo()
