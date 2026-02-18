@@ -1,37 +1,4 @@
-"""
-Transformer-Based Multimodal Fusion for Facial & Vocal Emotion Recognition
-===========================================================================
-Grounded in: "Multimodal Facial and Vocal Emotion Recognition: A Comprehensive
-Review of Methods, Challenges, and Future Directions"
-(Malik & Juneja, Manipal University Jaipur)
 
-Architecture Overview
----------------------
-This implements the Cross-Modal Transformer Fusion strategy described in
-Section 3.2 of the paper, which achieves 90–95% accuracy on CMU-MOSEI
-and outperforms CNN-only and CNN-LSTM baselines by 10–15%.
-
-Two-branch design:
-  [Visual Branch]  ResNet / ViT backbone  →  Visual Transformer Encoder
-  [Audio Branch]   Wav2Vec2 backbone      →  Audio Transformer Encoder
-         ↓                                          ↓
-         └──────────── Cross-Modal Attention ───────┘
-                               ↓
-                    Multimodal Fusion Transformer
-                               ↓
-                    Classifier Head (7 emotions)
-
-Emotion Classes (standard categorical model per paper Section 4.3):
-  0=Neutral, 1=Happy, 2=Sad, 3=Angry, 4=Fear, 5=Surprise, 6=Disgust
-
-Datasets this model targets (per paper Tables 1 & 2):
-  - IEMOCAP    (audio-visual dyadic interactions)
-  - CMU-MOSEI  (large-scale multimodal sentiment & emotion)
-  - MELD       (multimodal multi-party emotion in conversations)
-
-Requirements:
-  pip install torch torchvision torchaudio transformers timm
-"""
 
 import math
 import torch
@@ -39,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
 
-# Optional external libs — import gracefully so script remains usable
+
 try:
     from transformers import Wav2Vec2Model, Wav2Vec2Processor, ViTModel, ViTImageProcessor
 except Exception:
@@ -64,10 +31,10 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 import numpy as np
 
-# Device
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Lazy backbone placeholders (will be loaded on demand)
+
 wav_processor = None
 wav_model = None
 vit_processor = None
@@ -134,20 +101,18 @@ def ensure_backbones_loaded(allow_download: bool = False) -> bool:
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. CONFIGURATION
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class FusionConfig:
     """Central configuration — all hyperparameters in one place."""
 
-    # ── Emotion classes ────────────────────────────────────────────────────
+   
     NUM_CLASSES: int = 7
     EMOTION_LABELS: list = [
         "Neutral", "Happy", "Sad", "Angry", "Fear", "Surprise", "Disgust"
     ]
 
-    # ── Visual branch ──────────────────────────────────────────────────────
+  
     # Per Section 3.2: ViT / ResNet backbone → transformer encoder
     VISUAL_BACKBONE: str = "vit_base"     # "vit_base" | "resnet50"
     VISUAL_INPUT_DIM: int = 768           # ViT-Base token dim (or ResNet-50 → 2048 → projected)
@@ -155,7 +120,7 @@ class FusionConfig:
     VISUAL_SEQ_LEN: int = 197            # ViT 16×16 patches + CLS token (224px input)
     VISUAL_DROPOUT: float = 0.1
 
-    # ── Audio branch ───────────────────────────────────────────────────────
+   
     # Per Section 3.1.2 & 3.2: Wav2Vec2 self-supervised encoder
     AUDIO_BACKBONE: str = "wav2vec2"      # "wav2vec2" | "hubert" | "cnn_lstm"
     AUDIO_INPUT_DIM: int = 768           # Wav2Vec2-Base hidden size
@@ -163,7 +128,7 @@ class FusionConfig:
     AUDIO_SEQ_LEN: int = 128            # ~2s audio @ 16kHz downsampled
     AUDIO_DROPOUT: float = 0.1
 
-    # ── Shared transformer space ───────────────────────────────────────────
+    
     D_MODEL: int = 512
     N_HEADS: int = 8
     N_ENCODER_LAYERS: int = 4           # Per-modality transformer depth
@@ -172,11 +137,11 @@ class FusionConfig:
     DROPOUT: float = 0.1
     MAX_SEQ_LEN: int = 512
 
-    # ── Classifier head ────────────────────────────────────────────────────
+    
     CLASSIFIER_HIDDEN: int = 256
     CLASSIFIER_DROPOUT: float = 0.3
 
-    # ── Training ───────────────────────────────────────────────────────────
+    
     LEARNING_RATE: float = 1e-4
     WEIGHT_DECAY: float = 1e-2
     LABEL_SMOOTHING: float = 0.1        # Per Section 4.3: label smoothing for annotation noise
@@ -185,9 +150,7 @@ class FusionConfig:
     WARMUP_STEPS: int = 1000
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. POSITIONAL ENCODING
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class PositionalEncoding(nn.Module):
     """
@@ -215,14 +178,6 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. VISUAL BRANCH
-#    Paper ref: Section 3.1.1 (CNN-based FER) + Section 3.2 (ViT-based FER)
-#    "Vision Transformers (ViT) and hybrid CNN–Transformer architectures have
-#     demonstrated improved robustness to pose variation and partial occlusion
-#     by leveraging self-attention mechanisms to model spatial dependencies
-#     across facial regions."
-# ─────────────────────────────────────────────────────────────────────────────
 
 class VisualFeatureProjector(nn.Module):
     """
@@ -323,13 +278,7 @@ class VisualTransformerEncoder(nn.Module):
         return x[:, 0, :], x                    # CLS repr, full sequence
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. AUDIO BRANCH
-#    Paper ref: Section 3.1.2 (SER) + Section 3.2 (Wav2Vec2)
-#    "Self-supervised models such as Wav2Vec2 and HuBERT learn contextualized
-#     speech embeddings from large-scale unlabeled audio corpora, significantly
-#     enhancing generalization across speakers and recording environments."
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class AudioFeatureProjector(nn.Module):
     """
@@ -420,14 +369,7 @@ class AudioTransformerEncoder(nn.Module):
         return x[:, 0, :], x
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. CROSS-MODAL ATTENTION
-#    Paper ref: Section 3.2
-#    "Cross-modal transformers that jointly model audio–visual interactions,
-#     enabling dynamic weighting of modalities based on signal quality."
-#    "Attention-based fusion mechanisms further enhance robustness by selectively
-#     emphasizing reliable modalities under adverse conditions."
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class CrossModalAttention(nn.Module):
     """
@@ -536,11 +478,9 @@ class CrossModalAttention(nn.Module):
         return v_out, a_out, v_gate, a_gate
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. MULTIMODAL FUSION TRANSFORMER
-#    Paper ref: Section 3.2 Table 2 — "Cross-Modal Transformers: 90–95% on CMU-MOSEI"
-#    Stacks N_FUSION_LAYERS of cross-modal attention, then pools to fixed-dim repr
-# ─────────────────────────────────────────────────────────────────────────────
+
+# CMU-MOSEI"
+
 
 class MultimodalFusionTransformer(nn.Module):
     """
@@ -626,10 +566,7 @@ class MultimodalFusionTransformer(nn.Module):
         return fused_repr, info
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. CLASSIFIER HEAD
-#    Paper ref: Section 4.3 — categorical emotion model with label smoothing
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class EmotionClassifier(nn.Module):
     """
@@ -660,9 +597,7 @@ class EmotionClassifier(nn.Module):
         return self.head(x)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. FULL MODEL: TransformerFusionEmotionModel
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class TransformerFusionEmotionModel(nn.Module):
     """
@@ -709,17 +644,17 @@ class TransformerFusionEmotionModel(nn.Module):
                 for p in self.wav_model.parameters():
                     p.requires_grad = False
 
-        # ── Per-modality encoders ──────────────────────────────────────────
+        
         self.visual_encoder = VisualTransformerEncoder(cfg)
         self.audio_encoder  = AudioTransformerEncoder(cfg)
 
-        # ── Cross-modal fusion ─────────────────────────────────────────────
+       
         self.fusion = MultimodalFusionTransformer(cfg)
 
-        # ── Classifier ────────────────────────────────────────────────────
+        
         self.classifier = EmotionClassifier(cfg)
 
-        # ── Weight initialization ──────────────────────────────────────────
+      
         self._init_weights()
 
     def set_backbones_trainable(self, trainable: bool):
@@ -775,18 +710,18 @@ class TransformerFusionEmotionModel(nn.Module):
         visual_features = visual_features.to(device)
         audio_features = audio_features.to(device)
 
-        # ── Step 1: Per-modality encoding ─────────────────────────────────
+        
         visual_cls, visual_tokens = self.visual_encoder(visual_features, visual_mask)
         audio_cls,  audio_tokens  = self.audio_encoder(audio_features, audio_mask)
 
-        # ── Step 2: Cross-modal fusion ────────────────────────────────────
+        
         fused, gate_info = self.fusion(
             visual_tokens, audio_tokens,
             visual_cls, audio_cls,
             visual_mask, audio_mask,
         )
 
-        # ── Step 3: Classification ─────────────────────────────────────────
+       
         logits = self.classifier(fused)
 
         return {
@@ -833,12 +768,7 @@ class TransformerFusionEmotionModel(nn.Module):
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. LOSS FUNCTION
-#    Paper ref: Section 4.3
-#    "Label smoothing and uncertainty-aware training are employed to mitigate
-#     annotation noise" in emotion datasets like IEMOCAP and CMU-MOSEI.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class EmotionRecognitionLoss(nn.Module):
     """
@@ -866,10 +796,7 @@ class EmotionRecognitionLoss(nn.Module):
         return self.ce(logits, targets)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. LEARNING RATE SCHEDULER (Warmup + Cosine)
-#     Paper ref: Section 3.2 — transformer training requires warmup
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class WarmupCosineScheduler(torch.optim.lr_scheduler.LambdaLR):
     """
@@ -894,9 +821,7 @@ class WarmupCosineScheduler(torch.optim.lr_scheduler.LambdaLR):
         super().__init__(optimizer, lr_lambda)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. TRAINING STEP SKELETON
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class EmotionTrainer:
     """
@@ -964,9 +889,7 @@ class EmotionTrainer:
         return {"loss": loss.item(), "accuracy": acc}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 12. DATA LOADER, TRAINING & REAL-WORLD DEMO
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 # Label mapping for MELD → model indices
 EMOTION_TO_LABEL = {
@@ -1026,12 +949,12 @@ class MultimodalEmotionDataset(Dataset):
         if frame is None:
             frame = np.zeros((224, 224, 3), dtype=np.uint8)
 
-        # --- Label ---
+        # Label 
         raw_label = ex.get("Emotion") or ex.get("emotion") or "neutral"
         label = EMOTION_TO_LABEL.get(str(raw_label).lower(), 0)
 
-        # --- Convert to embeddings (requires backbones) ---
-        # Do NOT attempt network downloads here — require cached backbones.
+        #  Convert to embeddings 
+        
         if not ensure_backbones_loaded(allow_download=False):
             raise RuntimeError("Pretrained ViT/Wav2Vec2 backbones are required to build embeddings and are not cached locally.")
         if vit_model is None or wav_model is None or vit_processor is None or wav_processor is None:
