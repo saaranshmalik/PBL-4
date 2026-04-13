@@ -1,0 +1,65 @@
+{
+  "dataset": "MELD",
+  "root": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD",
+  "source_dir": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\data\\MELD",
+  "processed_dir": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\processed",
+  "splits": {
+    "train": {
+      "rows": 9989,
+      "dialogues": 1038,
+      "speakers": 260,
+      "emotion_counts": {
+        "anger": 1109,
+        "disgust": 271,
+        "fear": 268,
+        "joy": 1743,
+        "neutral": 4710,
+        "sadness": 683,
+        "surprise": 1205
+      },
+      "source_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\data\\MELD\\train_sent_emo.csv",
+      "processed_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\processed\\meld_train_normalized.csv"
+    },
+    "dev": {
+      "rows": 1109,
+      "dialogues": 114,
+      "speakers": 47,
+      "emotion_counts": {
+        "anger": 153,
+        "disgust": 22,
+        "fear": 40,
+        "joy": 163,
+        "neutral": 470,
+        "sadness": 111,
+        "surprise": 150
+      },
+      "source_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\data\\MELD\\dev_sent_emo.csv",
+      "processed_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\processed\\meld_dev_normalized.csv"
+    },
+    "test": {
+      "rows": 2610,
+      "dialogues": 280,
+      "speakers": 100,
+      "emotion_counts": {
+        "anger": 345,
+        "disgust": 68,
+        "fear": 50,
+        "joy": 402,
+        "neutral": 1256,
+        "sadness": 208,
+        "surprise": 281
+      },
+      "source_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\data\\MELD\\test_sent_emo.csv",
+      "processed_file": "E:\\codes\\pbl-4\\PBL-4-main\\datasets\\MELD\\processed\\meld_test_normalized.csv"
+    }
+  },
+  "label_mapping": {
+    "neutral": 0,
+    "joy": 1,
+    "sadness": 2,
+    "anger": 3,
+    "fear": 4,
+    "surprise": 5,
+    "disgust": 6
+  }
+}

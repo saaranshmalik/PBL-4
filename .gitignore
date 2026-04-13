@@ -1,0 +1,14 @@
+.venv/
+.matplotlib/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+outputs/
+dataset_backend.out.log
+dataset_backend.err.log
+
+datasets/MELD/.git/
+datasets/RAVDESS/*.zip
+datasets/RAVDESS/zenodo_record.json

@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dataset Testing Backend Dashboard</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --surface: rgba(8, 20, 38, 0.88);
+      --surface-strong: #0f213c;
+      --border: rgba(154, 197, 255, 0.14);
+      --text: #eff5ff;
+      --muted: #95a7c0;
+      --accent: #55c5ff;
+      --accent-2: #7df0bf;
+      --warn: #ffb454;
+      --danger: #ff7f7f;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(85, 197, 255, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(125, 240, 191, 0.14), transparent 24%),
+        linear-gradient(160deg, #05101d 0%, #08172a 55%, #07111f 100%);
+      color: var(--text);
+      padding: 32px 18px 48px;
+    }
+
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .hero,
+    .panel,
+    .table-shell {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .hero {
+      padding: 28px;
+      margin-bottom: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -80px -80px auto;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(85, 197, 255, 0.22), transparent 70%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: rgba(85, 197, 255, 0.1);
+      border: 1px solid rgba(85, 197, 255, 0.2);
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #d8efff;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(32px, 5vw, 56px);
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 760px;
+      line-height: 1.7;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 30px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .status-row {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .status-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 16px;
+    }
+
+    .status-head h2,
+    .table-shell h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+    }
+
+    .status-head p,
+    .table-shell p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 8px 12px;
+      border: 1px solid rgba(125, 240, 191, 0.28);
+      background: rgba(125, 240, 191, 0.1);
+      color: #ddfff0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .pill.warn {
+      border-color: rgba(255, 180, 84, 0.28);
+      background: rgba(255, 180, 84, 0.1);
+      color: #ffeacc;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 12px currentColor;
+    }
+
+    .progress {
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .progress > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 0.25s ease;
+    }
+
+    .suite {
+      display: grid;
+      gap: 14px;
+    }
+
+    .suite-card {
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+    }
+
+    .suite-card strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .suite-card p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .suite-card .bar {
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .suite-card .bar span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #58a8ff, #8b86ff);
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 11px 16px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      color: #082036;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    }
+
+    button.secondary {
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+
+    .table-shell {
+      padding: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .badge.warn {
+      color: #ffe3bf;
+      border-color: rgba(255, 180, 84, 0.22);
+      background: rgba(255, 180, 84, 0.08);
+    }
+
+    .badge.ok {
+      color: #defdeb;
+      border-color: rgba(125, 240, 191, 0.22);
+      background: rgba(125, 240, 191, 0.08);
+    }
+
+    .meta-line {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 980px) {
+      .grid,
+      .status-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 700px) {
+      body {
+        padding: 16px 12px 32px;
+      }
+
+      .hero,
+      .panel,
+      .table-shell {
+        border-radius: 20px;
+      }
+
+      .status-head {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      table, thead, tbody, tr, td, th {
+        display: block;
+      }
+
+      thead {
+        display: none;
+      }
+
+      tr {
+        padding: 12px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+      }
+
+      td {
+        border: none;
+        padding: 6px 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">Backend Integrated Verification</div>
+      <h1>Dataset Testing Control Room</h1>
+      <p>
+        This page talks to a dedicated Python backend that continuously verifies the datasets and models listed in the project.
+        The original <code>index.html</code> stays untouched, while this dashboard reads live verification results from the backend API.
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="panel metric">
+        <strong id="metric-total">0</strong>
+        <span>Total resources loaded from the shared dataset catalog.</span>
+      </article>
+      <article class="panel metric">
+        <strong id="metric-ready">0</strong>
+        <span>Resources currently ready for their assigned testing suites.</span>
+      </article>
+      <article class="panel metric">
+        <strong id="metric-attention">0</strong>
+        <span>Resources that need metadata or protocol follow-up.</span>
+      </article>
+      <article class="panel metric">
+        <strong id="metric-updated">Pending</strong>
+        <span>Last backend verification completion time.</span>
+      </article>
+    </section>
+
+    <section class="status-row">
+      <article class="panel">
+        <div class="status-head">
+          <div>
+            <h2>Backend Status</h2>
+            <p>The backend runs scheduled verification in the background and exposes API endpoints for manual re-checks.</p>
+          </div>
+          <div class="pill" id="backend-pill">
+            <span class="dot"></span>
+            <span id="backend-pill-text">Connecting</span>
+          </div>
+        </div>
+        <div class="progress">
+          <span id="run-progress"></span>
+        </div>
+        <div class="meta-line" id="backend-meta">Waiting for backend response.</div>
+        <div class="controls">
+          <button id="run-now">Run verification now</button>
+          <button class="secondary" id="refresh-latest">Refresh latest results</button>
+        </div>
+      </article>
+
+      <article class="panel suite">
+        <div class="suite-card">
+          <strong>Multimodal Emotion Recognition</strong>
+          <p>Checks audio + visual capable assets and linked fusion-compatible backbones.</p>
+          <div class="meta-line" id="suite-multimodal-text">Awaiting backend data.</div>
+          <div class="bar"><span id="suite-multimodal-bar"></span></div>
+        </div>
+        <div class="suite-card">
+          <strong>Facial Emotion Recognition</strong>
+          <p>Checks expression-oriented datasets, face encoders, and annotation references.</p>
+          <div class="meta-line" id="suite-facial-text">Awaiting backend data.</div>
+          <div class="bar"><span id="suite-facial-bar"></span></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="table-shell">
+      <h2>Verification Results</h2>
+      <p>Each row comes from the backend verifier. Manual runs hit <code>/api/verification/run</code>; passive refreshes read <code>/api/verification/latest</code>.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Resource</th>
+            <th>Status</th>
+            <th>Target Suites</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script>
+    const api = {
+      health: '/api/health',
+      latest: '/api/verification/latest',
+      run: '/api/verification/run'
+    };
+
+    const els = {
+      total: document.getElementById('metric-total'),
+      ready: document.getElementById('metric-ready'),
+      attention: document.getElementById('metric-attention'),
+      updated: document.getElementById('metric-updated'),
+      pill: document.getElementById('backend-pill'),
+      pillText: document.getElementById('backend-pill-text'),
+      meta: document.getElementById('backend-meta'),
+      progress: document.getElementById('run-progress'),
+      runNow: document.getElementById('run-now'),
+      refreshLatest: document.getElementById('refresh-latest'),
+      multimodalText: document.getElementById('suite-multimodal-text'),
+      facialText: document.getElementById('suite-facial-text'),
+      multimodalBar: document.getElementById('suite-multimodal-bar'),
+      facialBar: document.getElementById('suite-facial-bar'),
+      body: document.getElementById('results-body')
+    };
+
+    function setPill(text, warn) {
+      els.pill.className = 'pill' + (warn ? ' warn' : '');
+      els.pillText.textContent = text;
+    }
+
+    function percent(ready, eligible) {
+      if (!eligible) return 0;
+      return Math.round((ready / eligible) * 100);
+    }
+
+    function formatTime(iso) {
+      if (!iso) return 'Pending';
+      return new Date(iso).toLocaleString();
+    }
+
+    function renderResults(payload) {
+      const summary = payload.summary || {};
+      els.total.textContent = String(summary.total || 0);
+      els.ready.textContent = String(summary.ready || 0);
+      els.attention.textContent = String(summary.attention || 0);
+      els.updated.textContent = formatTime(payload.completed_at);
+      els.progress.style.width = '100%';
+      els.meta.textContent = 'Last trigger: ' + (payload.trigger || 'unknown') + ' | Started: ' + formatTime(payload.started_at);
+
+      const mmEligible = summary.multimodal_eligible || 0;
+      const mmReady = summary.multimodal_ready || 0;
+      const facialEligible = summary.facial_eligible || 0;
+      const facialReady = summary.facial_ready || 0;
+
+      els.multimodalText.textContent = mmReady + ' of ' + mmEligible + ' multimodal-linked assets ready.';
+      els.facialText.textContent = facialReady + ' of ' + facialEligible + ' facial-linked assets ready.';
+      els.multimodalBar.style.width = percent(mmReady, mmEligible) + '%';
+      els.facialBar.style.width = percent(facialReady, facialEligible) + '%';
+
+      setPill(payload.status === 'attention' ? 'Attention Needed' : 'Healthy', payload.status === 'attention');
+
+      els.body.innerHTML = '';
+      (payload.results || []).forEach(item => {
+        const row = document.createElement('tr');
+        const badgeClass = item.status === 'ready' ? 'badge ok' : 'badge warn';
+        row.innerHTML = `
+          <td>
+            <strong>${item.name}</strong>
+            <div class="meta-line">${item.category} | ${item.type}</div>
+          </td>
+          <td><span class="${badgeClass}">${item.status}</span></td>
+          <td>${(item.target_suites || []).join(', ') || 'none'}</td>
+          <td>${(item.notes || []).join(', ') || 'Ready for testing'}</td>
+        `;
+        els.body.appendChild(row);
+      });
+    }
+
+    async function fetchHealth() {
+      try {
+        const response = await fetch(api.health);
+        const payload = await response.json();
+        setPill(payload.latest_status === 'attention' ? 'Attention Needed' : 'Healthy', payload.latest_status === 'attention');
+      } catch (error) {
+        setPill('Offline', true);
+        els.meta.textContent = 'Backend is not reachable at the configured API endpoint.';
+      }
+    }
+
+    async function fetchLatest() {
+      els.progress.style.width = '55%';
+      const response = await fetch(api.latest);
+      const payload = await response.json();
+      renderResults(payload);
+    }
+
+    async function runNow() {
+      setPill('Running', false);
+      els.progress.style.width = '35%';
+      const response = await fetch(api.run, { method: 'POST' });
+      const payload = await response.json();
+      renderResults(payload);
+    }
+
+    els.runNow.addEventListener('click', runNow);
+    els.refreshLatest.addEventListener('click', fetchLatest);
+
+    fetchHealth();
+    fetchLatest();
+    setInterval(fetchHealth, 15000);
+    setInterval(fetchLatest, 30000);
+  </script>
+</body>
+</html>

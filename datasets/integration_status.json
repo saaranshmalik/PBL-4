@@ -1,0 +1,57 @@
+{
+  "resources": [
+    {
+      "name": "CMU-MOSEI",
+      "type": "dataset",
+      "status": "manual_required",
+      "local_path": "datasets/CMU-MOSEI",
+      "reason": "Official access and preparation are not fully automatable from the linked page."
+    },
+    {
+      "name": "MELD",
+      "type": "dataset",
+      "status": "pending_public_download",
+      "local_path": "datasets/MELD"
+    },
+    {
+      "name": "IEMOCAP",
+      "type": "dataset",
+      "status": "manual_required",
+      "local_path": "datasets/IEMOCAP",
+      "reason": "Access is restricted and typically requires a licensed/manual download flow."
+    },
+    {
+      "name": "RAVDESS",
+      "type": "dataset",
+      "status": "pending_public_download",
+      "local_path": "datasets/RAVDESS"
+    },
+    {
+      "name": "AffectNet",
+      "type": "dataset",
+      "status": "manual_required",
+      "local_path": "datasets/AffectNet",
+      "reason": "Official access requires registration/request approval."
+    },
+    {
+      "name": "Wav2Vec 2.0",
+      "type": "model",
+      "status": "optional_download",
+      "local_path": "datasets/models/wav2vec2-base"
+    },
+    {
+      "name": "FaceNet",
+      "type": "reference",
+      "status": "reference_only",
+      "local_path": "datasets/references/facenet",
+      "reason": "The linked page is a paper, not a dataset archive."
+    },
+    {
+      "name": "FACS",
+      "type": "reference",
+      "status": "reference_only",
+      "local_path": "datasets/references/facs",
+      "reason": "The linked page is a standards/reference resource, not an open dataset archive."
+    }
+  ]
+}

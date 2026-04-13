@@ -1,0 +1,550 @@
+{
+  "status": "attention",
+  "trigger": "scheduler",
+  "started_at": "2026-04-13T20:55:19.055941+00:00",
+  "completed_at": "2026-04-13T20:55:19.055941+00:00",
+  "summary": {
+    "total": 8,
+    "ready": 7,
+    "attention": 1,
+    "multimodal_eligible": 5,
+    "multimodal_ready": 4,
+    "facial_eligible": 4,
+    "facial_ready": 4
+  },
+  "results": [
+    {
+      "name": "CMU-MOSEI",
+      "category": "multimodal",
+      "type": "dataset",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "multimodal"
+      ],
+      "target_suites": [
+        "multimodal"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "multimodal-suite",
+          "ok": true
+        },
+        {
+          "name": "evaluation-protocol",
+          "ok": true
+        },
+        {
+          "name": "emotion-coverage",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "CMU-MOSEI",
+        "category": "multimodal",
+        "type": "dataset",
+        "description": "Large-scale multimodal sentiment analysis and emotion recognition dataset with video, audio, and text modalities.",
+        "url": "https://github.com/A2Zadeh/CMU-MultimodalSDK",
+        "modalities": [
+          "video",
+          "audio",
+          "text"
+        ],
+        "tasks": [
+          "emotion-recognition",
+          "multimodal-fusion",
+          "sentiment-analysis"
+        ],
+        "suites": [
+          "multimodal"
+        ],
+        "emotions": [
+          "neutral",
+          "happy",
+          "sad",
+          "angry",
+          "fear",
+          "surprise",
+          "disgust"
+        ],
+        "protocol": {
+          "splits": [
+            "train",
+            "validation",
+            "test"
+          ],
+          "annotations": true
+        }
+      }
+    },
+    {
+      "name": "MELD",
+      "category": "multimodal",
+      "type": "dataset",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "multimodal"
+      ],
+      "target_suites": [
+        "multimodal"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "multimodal-suite",
+          "ok": true
+        },
+        {
+          "name": "evaluation-protocol",
+          "ok": true
+        },
+        {
+          "name": "emotion-coverage",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "MELD",
+        "category": "multimodal",
+        "type": "dataset",
+        "description": "Multimodal EmotionLines Dataset for conversational emotion recognition using audio, visual, and text cues.",
+        "url": "https://affective-meld.github.io/",
+        "modalities": [
+          "video",
+          "audio",
+          "text"
+        ],
+        "tasks": [
+          "emotion-recognition",
+          "conversation-emotion",
+          "multimodal-fusion"
+        ],
+        "suites": [
+          "multimodal"
+        ],
+        "emotions": [
+          "anger",
+          "disgust",
+          "fear",
+          "joy",
+          "neutral",
+          "sadness",
+          "surprise"
+        ],
+        "protocol": {
+          "splits": [
+            "train",
+            "validation",
+            "test"
+          ],
+          "annotations": true
+        }
+      }
+    },
+    {
+      "name": "IEMOCAP",
+      "category": "multimodal",
+      "type": "dataset",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "multimodal"
+      ],
+      "target_suites": [
+        "multimodal"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "multimodal-suite",
+          "ok": true
+        },
+        {
+          "name": "evaluation-protocol",
+          "ok": true
+        },
+        {
+          "name": "emotion-coverage",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "IEMOCAP",
+        "category": "multimodal",
+        "type": "dataset",
+        "description": "Interactive emotional dyadic motion capture database with audio, video, and transcripts.",
+        "url": "https://sail.usc.edu/iemocap/",
+        "modalities": [
+          "video",
+          "audio",
+          "text",
+          "motion-capture"
+        ],
+        "tasks": [
+          "emotion-recognition",
+          "speaker-dynamics",
+          "multimodal-fusion"
+        ],
+        "suites": [
+          "multimodal"
+        ],
+        "emotions": [
+          "angry",
+          "happy",
+          "sad",
+          "neutral",
+          "excited",
+          "frustrated"
+        ],
+        "protocol": {
+          "splits": [
+            "session-based"
+          ],
+          "annotations": true
+        }
+      }
+    },
+    {
+      "name": "RAVDESS",
+      "category": "multimodal",
+      "type": "dataset",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "multimodal",
+        "facial"
+      ],
+      "target_suites": [
+        "facial",
+        "multimodal"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "multimodal-suite",
+          "ok": true
+        },
+        {
+          "name": "facial-suite",
+          "ok": true
+        },
+        {
+          "name": "evaluation-protocol",
+          "ok": true
+        },
+        {
+          "name": "emotion-coverage",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "RAVDESS",
+        "category": "multimodal",
+        "type": "dataset",
+        "description": "Audio-visual emotional speech and song dataset from 24 actors across 8 emotions.",
+        "url": "https://zenodo.org/record/1188976",
+        "modalities": [
+          "video",
+          "audio",
+          "facial"
+        ],
+        "tasks": [
+          "speech-emotion",
+          "facial-emotion",
+          "multimodal-fusion"
+        ],
+        "suites": [
+          "multimodal",
+          "facial"
+        ],
+        "emotions": [
+          "neutral",
+          "calm",
+          "happy",
+          "sad",
+          "angry",
+          "fearful",
+          "disgust",
+          "surprised"
+        ],
+        "protocol": {
+          "splits": [
+            "actor-independent"
+          ],
+          "annotations": true
+        }
+      }
+    },
+    {
+      "name": "AffectNet",
+      "category": "facial",
+      "type": "dataset",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "facial"
+      ],
+      "target_suites": [
+        "facial"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "facial-suite",
+          "ok": true
+        },
+        {
+          "name": "evaluation-protocol",
+          "ok": true
+        },
+        {
+          "name": "emotion-coverage",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "AffectNet",
+        "category": "facial",
+        "type": "dataset",
+        "description": "Large-scale facial expression dataset with discrete labels and valence-arousal annotations.",
+        "url": "http://mohammadmahoor.com/affectnet/",
+        "modalities": [
+          "image",
+          "facial"
+        ],
+        "tasks": [
+          "facial-emotion",
+          "expression-classification",
+          "valence-arousal"
+        ],
+        "suites": [
+          "facial"
+        ],
+        "emotions": [
+          "neutral",
+          "happy",
+          "sad",
+          "surprise",
+          "fear",
+          "disgust",
+          "anger",
+          "contempt"
+        ],
+        "protocol": {
+          "splits": [
+            "train",
+            "validation",
+            "test"
+          ],
+          "annotations": true
+        }
+      }
+    },
+    {
+      "name": "Wav2Vec 2.0",
+      "category": "model",
+      "type": "model",
+      "status": "attention",
+      "notes": [
+        "multimodal suite is missing required modalities or tasks"
+      ],
+      "ready_suites": [],
+      "target_suites": [
+        "multimodal"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "multimodal-suite",
+          "ok": false
+        },
+        {
+          "name": "suite-linking",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "Wav2Vec 2.0",
+        "category": "model",
+        "type": "model",
+        "description": "Self-supervised speech representation learning model suitable for speech emotion features.",
+        "url": "https://huggingface.co/facebook/wav2vec2-base",
+        "modalities": [
+          "audio"
+        ],
+        "tasks": [
+          "speech-emotion",
+          "feature-extraction"
+        ],
+        "suites": [
+          "multimodal"
+        ],
+        "emotions": [],
+        "protocol": {
+          "splits": [
+            "pretrained-backbone"
+          ],
+          "annotations": false
+        }
+      }
+    },
+    {
+      "name": "FaceNet",
+      "category": "model",
+      "type": "model",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "facial"
+      ],
+      "target_suites": [
+        "facial"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "facial-suite",
+          "ok": true
+        },
+        {
+          "name": "suite-linking",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "FaceNet",
+        "category": "model",
+        "type": "model",
+        "description": "Face embedding network commonly used as a facial feature extractor.",
+        "url": "https://arxiv.org/abs/1503.03832",
+        "modalities": [
+          "image",
+          "facial"
+        ],
+        "tasks": [
+          "face-embedding",
+          "feature-extraction",
+          "facial-emotion"
+        ],
+        "suites": [
+          "facial"
+        ],
+        "emotions": [],
+        "protocol": {
+          "splits": [
+            "pretrained-backbone"
+          ],
+          "annotations": false
+        }
+      }
+    },
+    {
+      "name": "FACS",
+      "category": "standard",
+      "type": "standard",
+      "status": "ready",
+      "notes": [],
+      "ready_suites": [
+        "facial"
+      ],
+      "target_suites": [
+        "facial"
+      ],
+      "checks": [
+        {
+          "name": "core-metadata",
+          "ok": true
+        },
+        {
+          "name": "source-url",
+          "ok": true
+        },
+        {
+          "name": "facial-suite",
+          "ok": true
+        },
+        {
+          "name": "suite-linking",
+          "ok": true
+        }
+      ],
+      "resource": {
+        "name": "FACS",
+        "category": "standard",
+        "type": "standard",
+        "description": "Facial Action Coding System used as a facial movement taxonomy and annotation reference.",
+        "url": "https://www.paulekman.com/facial-action-coding-system/",
+        "modalities": [
+          "facial"
+        ],
+        "tasks": [
+          "annotation-standard",
+          "facial-emotion"
+        ],
+        "suites": [
+          "facial"
+        ],
+        "emotions": [
+          "action-units"
+        ],
+        "protocol": {
+          "splits": [
+            "taxonomy"
+          ],
+          "annotations": true
+        }
+      }
+    }
+  ]
+}
